@@ -7,10 +7,16 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"net/http"
 )
 
 const (
 	KeySize = 2048
+)
+
+var (
+	privateKey *rsa.PrivateKey
+	publicKey  *rsa.PublicKey
 )
 
 func GenerateKeypair(keySize int) (*rsa.PrivateKey, *rsa.PublicKey, error) {
@@ -46,53 +52,71 @@ func Base64Decode(message []byte) (b []byte, err error) {
 	return b[:l], nil
 }
 
-func main() {
-	privateKey, publicKey, err := GenerateKeypair(KeySize)
+func check(w http.ResponseWriter, r *http.Request) {
+	r.ParseForm()
+	msg := []byte(r.Form.Get("message"))
+	b64sign := []byte(r.Form.Get("signature"))
+	fmt.Fprintf(w, "Message: %s\n", msg)
+	fmt.Fprintf(w, "Signature: %s\n", b64sign)
+	signature, err := Base64Decode(b64sign)
 	if err != nil {
-		panic(err)
+		fmt.Fprintln(w, "Wrong sign format: ", err)
+		return
 	}
-	fmt.Println("Private Key: ", privateKey)
-	fmt.Println("Public key: ", publicKey)
-	fmt.Println("Keypair generation complete!\n")
-
-	msg := []byte("Это сообщение для проверки подписи")
-	fmt.Printf("msg: %s\n", msg)
-
 	msgHash, err := Hash(msg)
 	if err != nil {
-		panic(err)
+		fmt.Fprintln(w, err)
+		return
 	}
-	fmt.Printf("msgHash: %x\n", msgHash)
-
-	signature, err := rsa.SignPSS(rand.Reader, privateKey, crypto.SHA256, msgHash, nil)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Printf("Signature in base64: %s\n", Base64Encode(signature))
-
+	fmt.Fprintf(w, "Hash: %x\n", msgHash)
 	err = rsa.VerifyPSS(publicKey, crypto.SHA256, msgHash, signature, nil)
 	if err != nil {
-		fmt.Println("Could not verify signature: ", err)
+		fmt.Fprintln(w, "Could not verify signature: ", err)
 		return
 	}
-	// Подпись верна, если функция VerifyPSS не вернула ошибок
-	fmt.Println("Signature verified\n")
+	fmt.Fprintln(w, "Signature verified")
+}
 
-	// Пробуем проверить, действительна ли подпись уже для другого сообщения:
-	newMsg := []byte("Это уже совсем другое сообщение")
-	fmt.Printf("newMsg: %s\n", newMsg)
+func signed(w http.ResponseWriter, r *http.Request) {
+	r.ParseForm()
+	msg := []byte(r.Form.Get("message"))
+	fmt.Fprintf(w, "Message: %s\n", msg)
+	msgHash, err := Hash(msg)
+	if err != nil {
+		fmt.Fprintln(w, err)
+		return
+	}
+	fmt.Fprintf(w, "Hash: %x\n", msgHash)
+	signature, err := rsa.SignPSS(rand.Reader, privateKey, crypto.SHA256, msgHash, nil)
+	if err != nil {
+		fmt.Fprintln(w, err)
+		return
+	}
+	fmt.Fprintf(w, "Signature in base64: %s\n", Base64Encode(signature))
+}
 
-	newMsgHash, err := Hash(newMsg)
+func main() {
+	var err error
+	privateKey, publicKey, err = GenerateKeypair(KeySize)
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("newMsgHash: %x\n", newMsgHash)
+	fmt.Println("Keypair generation complete!\n")
 
-	err = rsa.VerifyPSS(publicKey, crypto.SHA256, newMsgHash, signature, nil)
+	// index := http.FileServer(http.Dir("./static/index/"))
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "./static/index/index.html")
+	})
+	// sign := http.FileServer(http.Dir("./static/sign/"))
+	// http.Handle("/", index)
+	http.HandleFunc("/sign", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "./static/sign/sign.html")
+	})
+	http.HandleFunc("/check", check)
+	http.HandleFunc("/signed", signed)
+	fmt.Println("Listening on :80")
+	err = http.ListenAndServe(":80", nil)
 	if err != nil {
-		fmt.Println("Could not verify signature: ", err)
-		return
+		panic(err)
 	}
-
-	fmt.Println("Signature verified")
 }
